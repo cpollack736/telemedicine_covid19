@@ -1,0 +1,632 @@
+---
+title: "Revised Telemedicine Analysis"
+author: "Catherine C. Pollack"
+date: "4/25/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Bring in Libraries and Packages
+```{r}
+library(tidyverse)
+library(data.table)
+library(lubridate)
+library(magrittr)
+library(tidytext)
+library(textstem)
+library(reshape2)
+library(ggsci)
+library(stopwords)
+library(qdapDictionaries)
+library(wordcloud)
+#devtools::install_github("lchiffon/wordcloud2")
+library(wordcloud2)
+library(ggpubr)
+library(pscl)
+library(sandwich)
+library(glmmTMB)
+library(GLMMadaptive)
+```
+
+# Bring in Data
+```{r}
+#dat <- fread("/Volumes/LaCie/Cancer_COVID/Data/210426_telemedicine_covid_nodups_expand_sentiment_emotion.csv")
+covid <- fread("/Volumes/LaCie/Cancer_COVID/Data/210510_all_covid_nodups_expand_sentiment.csv")
+```
+
+# Drop "0" columns
+```{r}
+dat %<>%
+  select(-`0`)
+
+covid %<>%
+  select(-`0`)
+```
+
+# Calculating total retweets (retweets and quote tweets)
+```{r}
+dat %<>%
+  mutate(retweet_quote_total = retweet_count + quote_count)
+
+covid %<>%
+  mutate(retweet_quote_total = retweet_count + quote_count)
+```
+
+# Part 1. Tweet Prevalence per Month (Raw, Likes, and Favorites)
+
+## Add "month, year" column
+```{r}
+dat %<>%
+  mutate(month_only = month(created_at),
+         year_only = year(created_at) - 2000,
+         month_year = paste(month_only, year_only, sep = "/"),
+         date = date(created_at))
+
+dat$month_year <- factor(dat$month_year, levels = c("1/20", "2/20", "3/20", "4/20", "5/20", "6/20", "7/20", "8/20", "9/20", "10/20", "11/20", "12/20", "1/21", "2/21", "3/21", "4/21"))
+
+covid %<>%
+  mutate(month_only = month(created_at),
+         year_only = year(created_at) - 2000,
+         month_year = paste(month_only, year_only, sep = "/"),
+         date = date(created_at))
+
+covid$month_year <- factor(covid$month_year, levels = c("1/20", "2/20", "3/20", "4/20", "5/20", "6/20", "7/20", "8/20", "9/20", "10/20", "11/20", "12/20", "1/21", "2/21", "3/21", "4/21"))
+
+```
+
+# Randomly sample covid dataset to match telemedicine dataset
+```{r}
+View(covid %>%
+  group_by(month_year) %>%
+  tally(.))
+
+dat_sample_values <- dat %>%
+  group_by(month_year) %>%
+  tally(.)
+
+set.seed(110295)
+covid_january <- filter(covid, month_year == "1/20")
+covid_final <- covid_january[sample(nrow(covid_january), as.numeric(dat_sample_values[1, "n"])),]
+
+for (i in 2:(nrow(dat_sample_values)-1)) {
+  print(i)
+  my <- as.character(as.data.frame(dat_sample_values[i, "month_year"])$month_year)
+  n <- as.numeric(dat_sample_values[i, "n"])
+  
+  covid_loop <- filter(covid, month_year == my)
+  covid_loop_final <- covid_loop[sample(nrow(covid_loop), n),]
+  
+  covid_final <- rbind(covid_final, covid_loop_final)
+}
+
+dat %<>%
+  filter(is.na(month_year) == FALSE)
+
+#covid <- covid[sample(nrow(covid), nrow(dat)), ]
+```
+
+## Raw Tweets over Time
+```{r}
+dat %>%
+  group_by(date) %>%
+  summarise(count = n()) %>%
+  ggplot(aes(x = date, y = count)) +
+  geom_line(color = "cornflower blue",
+            size = 0.75) +
+  theme_classic() +
+  scale_x_date(date_breaks = "1 month",
+               date_labels = "%m/%y") +
+  labs(x = "Date (Month/Year)",
+       y = "Count",
+       title = "Frequency of Telemedicine-COVID-19 Tweets per Day: 01/01/2020 - 04/24/2021")
+#setwd("/Volumes/LaCie/Cancer_COVID/Output")
+#ggsave("210426_TelemedicineTweetsPerDay.tiff", width = 7.25, height = 4.51)
+
+dat %>%
+  group_by(month_year) %>%
+  summarise(total_per_month = n()) %>%
+  ungroup() %>%
+  mutate(percent_per_month = total_per_month/sum(total_per_month) * 100) %>%
+  arrange(desc(total_per_month))
+```
+
+## Favorites Over Time
+```{r}
+dat %>%
+  group_by(date) %>%
+  summarise(count = sum(like_count, na.rm = TRUE)) %>%
+  ggplot(aes(x = date, y = count)) +
+  geom_line(color = "darkgreen",
+            size = 0.75) +
+  theme_classic() +
+  scale_x_date(date_breaks = "1 month",
+               date_labels = "%m/%y") +
+  labs(x = "Date",
+       y = "Count",
+       title = "Frequency of Telemedicine-COVID-19 Likes per Day: 01/01/2020 - 04/25/2021")
+#setwd("/Volumes/LaCie/Cancer_COVID/Output")
+#ggsave("210426_TelemedicineLikesPerDay.tiff", width = 7.25, height = 4.51)
+
+dat %>%
+  group_by(date) %>%
+  summarise(like_count = sum(like_count, na.rm = TRUE),
+            total_count = n(),
+            likes_per_tweet = like_count/total_count) %>%
+  ggplot(aes(x = date, y = likes_per_tweet)) +
+  geom_line(color = "darkgreen",
+            size = 0.75) +
+  theme_classic() +
+  scale_x_date(date_breaks = "1 month",
+               date_labels = "%m/%y") +
+  labs(x = "Date",
+       y = "Count",
+       title = "Frequency of Telemedicine-COVID-19 Likes per Tweet per Day: 01/01/2020 - 04/25/2021")
+#setwd("/Volumes/LaCie/Cancer_COVID/Output")
+#ggsave("210426_TelemedicineLikesPerTweetPerDay.tiff", width = 7.25, height = 4.51)
+```
+
+## Retweets Over Time
+```{r}
+dat %>%
+  group_by(date) %>%
+  summarise(count = sum(retweet_quote_total, na.rm = TRUE)) %>%
+  ggplot(aes(x = date, y = count)) +
+  geom_line(color = "darkred",
+            size = 0.75) +
+  theme_classic() +
+  scale_x_date(date_breaks = "1 month",
+               date_labels = "%m/%y") +
+  labs(x = "Date",
+       y = "Count",
+       title = "Frequency of Telemedicine-COVID-19 Retweets per Day: 01/01/2020 - 04/25/2021")
+#setwd("/Volumes/LaCie/Cancer_COVID/Output")
+#ggsave("210426_TelemedicineRetweetsPerDay.tiff", width = 7.25, height = 4.51)
+
+dat %>%
+  ggplot(aes(x = log10(retweet_quote_total), fill = month_year)) +
+  #geom_histogram(color = "black") +
+  geom_density() +
+  facet_wrap(~month_year) + 
+  theme_classic() +
+  labs(x = "Retweets (Log Base 10)",
+       y = "Density",
+       fill = "Date (Month/Year)",
+       title = "Distribution of Retweets (Log Base 10) By Month")
+setwd("/Volumes/LaCie/Cancer_COVID/Output")
+ggsave("210513_TelemedicineRetweetsPerMonth_Density.tiff", width = 7.25, height = 4.51)
+
+```
+
+## Retweets General vs. Retweets COVID
+```{r}
+summary(dat$retweet_quote_total)
+summary(covid_final$retweet_quote_total)
+
+wilcox.test(dat$retweet_quote_total, covid_final$retweet_quote_total) #Significantly more likes within the COVID data set compared to the 
+
+dat$data_set <- "Telemedicine"
+covid_final$data_set <- "COVID"
+
+all_tweets <- rbind(dat, covid_final, fill = TRUE)
+
+dat %>%
+  dplyr::filter(retweet_quote_total >= 1) %>%
+  group_by(month_year) %>%
+  summarise(median(retweet_quote_total),
+            quantile(retweet_quote_total, 0.25),
+            quantile(retweet_quote_total, 0.75))
+
+fm1 <- mixed_model(retweet_quote_total ~ month_year + data_set, 
+                   random = ~ 1 | date, 
+                   data = all_tweets,
+                   family = zi.poisson(), 
+                   zi_fixed = ~ month_year + data_set + data_set)
+
+
+model <- glmmTMB(retweet_quote_total ~ as.numeric(date) + data_set + (1|date), 
+                 zi=~date+data_set, 
+                 data=all_tweets, 
+                 family=poisson)
+
+
+model <- zeroinfl(retweet_quote_total ~ month_year*data_set, 
+                  data = all_tweets,
+                  dist = "poisson")
+
+cov.m1 <- vcovCL(model, type="HC0")
+std.err <- sqrt(diag(cov.m1))
+r.est <- cbind(Estimate= round(exp(coef(m1)), 2), 
+               "Pr(>|z|)" = round(2 * pnorm(abs(coef(m1)/std.err), lower.tail=FALSE), 3),
+               LL = round(exp(coef(m1) - 1.96 * std.err), 2),
+               UL = round(exp(coef(m1) + 1.96 * std.err), 2))
+r.est
+```
+
+## Favorites General vs. Favorites COVID
+```{r}
+summary(dat$like_count)
+summary(covid_final$like_count)
+wilcox.test(dat$like_count, covid_final$like_count) #Significantly more likes within the COVID data set compared to the 
+kruskal.test(like_count ~ month_year, data = dat)
+pairwise.wilcox.test(dat$like_count, dat$month_year, p.adjust.method = "BH")
+
+dat %>%
+  #dplyr::filter(retweet_quote_total >= 1) %>%
+  group_by(month_year) %>%
+  summarise(median(like_count),
+            quantile(like_count, 0.25),
+            quantile(like_count, 0.75))
+```
+
+# Part 2: Updated Sentiment Analysis
+
+## Categorical Sentiment Classification
+```{r}
+dat %<>%
+  mutate(sentiment_categorical = case_when(
+    compound >= 0.05 ~ "Positive",
+    compound <= -0.05 ~ "Negative",
+    compound > -0.05 & compound < 0.05 ~ "Neutral"
+  ))
+```
+
+## Create Long Sentiment Data
+```{r}
+dat_long_sentiment <- dat %>%
+  group_by(date) %>%
+  summarise(average_neg = mean(neg, na.rm = TRUE),
+            average_neu = mean(neu, na.rm = TRUE),
+            average_pos = mean(pos, na.rm = TRUE),
+            average_compound = mean(compound, na.rm = TRUE),
+            percent_neg = length(which(sentiment_categorical == "Negative"))/n() * 100,
+            percent_neu = length(which(sentiment_categorical == "Neutral"))/n() * 100,
+            percent_pos = length(which(sentiment_categorical == "Positive"))/n() * 100) %>%
+  melt(id = "date")
+
+dat_long_sentiment %<>%
+  mutate(variable_figure = case_when(
+    variable == "percent_neg" | variable == "average_neg" ~ "Negative",
+    variable == "percent_neu"| variable == "average_neu" ~ "Neutral",
+    variable == "percent_pos" | variable == "average_pos"~ "Positive",
+    variable == "average_compound" ~ "Compound"
+  ))
+
+```
+
+# Changes in Categorical Sentiment
+```{r}
+dat_long_sentiment %>%
+  filter(variable == "percent_neg" | variable == "percent_neu" | variable == "percent_pos") %>%
+  ggplot(aes(x = date, y = value, color = variable_figure, group = variable_figure)) +
+  geom_line() +
+  theme_classic() +
+  scale_x_date(date_breaks = "4 month",
+               date_labels = "%m/%y") +
+  facet_wrap(~variable_figure) +
+  theme(axis.text.x = element_text(),
+        legend.position = "bottom") +
+  labs(x = "Date (Month/Year)",
+       y = "Percent",
+       title = "Percent of Telemedicine-COVID-19 Tweets per Sentiment per Day\n01/01/2020 - 04/25/2021",
+       color = "Sentiment") +
+  scale_color_npg()
+setwd("/Volumes/LaCie/Cancer_COVID/Output")
+ggsave("210426_TelemedicineSentimentPerDay.tiff", width = 7.25, height = 4.51)
+
+```
+
+# Changes in Compound Sentiment
+```{r}
+dat_long_sentiment %>%
+  filter(variable == "average_compound") %>%
+  ggplot(aes(x = date, y = value, color = variable_figure, group = variable_figure)) +
+  geom_line(color = "#6164ba") +
+  geom_hline(yintercept = -0.05, color = "black", linetype = "dashed") +
+  geom_hline(yintercept = 0.05, color = "black", linetype = "dashed") +
+  theme_classic() +
+  scale_x_date(date_breaks = "2 month",
+               date_labels = "%m/%y") +
+  labs(x = "Date (Month/Year)",
+       y = "Compound Score",
+       title = "Average Compound Score of Telemedicine-COVID-19 Tweets per Day\n01/01/2020 - 04/25/2021")
+setwd("/Volumes/LaCie/Cancer_COVID/Output")
+ggsave("210426_TelemedicineCompoundPerDay.tiff", width = 7.25, height = 4.51)
+```
+
+# Part 3: Changes in Sentiment by Likes/Retweets
+
+## Likes
+```{r}
+dat %>%
+  filter(like_count != 0) %>%
+  ggplot(aes(x = compound, y = log10(like_count), color = month_year)) +
+  geom_point() +
+  geom_vline(xintercept = -0.05, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 0.05, color = "black", linetype = "dashed") +
+  geom_smooth(method = "lm", color = "black") +
+  theme_classic() +
+  facet_wrap(~month_year) +
+  labs(x = "Compound Score",
+       y = "Log Likes (Base 10)",
+       color = "Month/Year",
+       title = "Distribution of Sentiment per Likes")
+setwd("/Volumes/LaCie/Cancer_COVID/Output")
+ggsave("210426_TelemedicineCompoundLogLikes.tiff", width = 7.25, height = 4.51)
+```
+
+## Retweets
+```{r}
+dat %>%
+  filter(retweet_quote_total != 0) %>%
+  ggplot(aes(x = compound, y = log10(retweet_quote_total), color = month_year)) +
+  geom_point() +
+  geom_vline(xintercept = -0.05, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 0.05, color = "black", linetype = "dashed") +
+  geom_smooth(method = "lm", color = "black") +
+  theme_classic() +
+  facet_wrap(~month_year) +
+  labs(x = "Compound Score",
+       y = "Log Retweets (Base 10)",
+       color = "Month/Year",
+       title = "Distribution of Sentiment per Retweet")
+setwd("/Volumes/LaCie/Cancer_COVID/Output")
+ggsave("210426_TelemedicineCompoundLogRetweets.tiff", width = 7.25, height = 4.51)
+```
+
+# Part 4: Extracting Dates for Random Sample of COVID-19 Tweets
+```{r}
+dates_for_export_df <- dat %>%
+  ungroup() %>%
+  group_by(month_year) %>%
+  summarise(count_per_month = n()) %>%
+  mutate(start_date = gsub("/", "-01-20", month_year),
+         start_date = str_pad(start_date, 10, side = "left", pad = "0")) %>%
+  filter(is.na(month_year) == FALSE)
+
+end_date <- seq(as.Date("2020-02-01"),length=16,by="months")-1
+
+dates_for_export_df <- cbind(dates_for_export_df, end_date)
+
+setwd("/Volumes/LaCie/Cancer_COVID/Data/")
+write.csv(dates_for_export_df, "210509_dates_for_random_covid.csv")
+```
+
+## Count by Month Instead
+```{r}
+dates_for_export_month_year <- dat %>%
+  group_by(month_year) %>%
+  count(.) %>%
+  arrange()
+```
+
+# Part 5: Bigram and Trigram Analysis
+## Cleaning
+```{r}
+#Tokenize
+dat_tokenized <- dat %>%
+  unnest_tokens(word, text)
+
+unique_tokens <- as.data.frame(unique(dat_tokenized$word))
+colnames(unique_tokens) <- "token"
+
+# Lemmatize Words
+for (i in 1:nrow(unique_tokens)) {
+#for (i in 1:10) {
+  if (i %% 100 == 0) {
+    print(i)
+  }
+  word <- unique_tokens[i, "token"]
+  unique_tokens[i, "lemmatized_token"] <- lemmatize_words(word)
+}
+
+dat_tokenized_lem <- left_join(dat_tokenized, 
+                               unique_tokens,
+                               by = c("word" = "token"))
+#Count words per tweet
+dat_tokenized_lem %<>% 
+  count(V1, word, sort = TRUE)
+
+#Add total unique words
+total_unique_words_dat <- dat_tokenized_lem %>%
+  group_by(V1) %>%
+  summarise(tweet_word_count = sum(n))
+
+#Add total words per tweet
+dat_tokenized_lem <- left_join(dat_tokenized_lem, total_unique_words_dat)
+
+#Remove english and spanish stopwords 
+dat_tokenized_lem %<>%
+  anti_join(stop_words) 
+
+dat_tokenized_lem %<>%
+  filter(!(word %in% stopwords(language = "es")))
+
+#Calculate TF, IDF, and TF-IDF
+dat_tfidf <- dat_tokenized_lem %>%
+  bind_tf_idf(word, V1, n) %>%
+  arrange(tf_idf)
+
+#Remove words that have a low IDF in the 0.05th percentile 
+dat_domain_stopwords <- dat_tfidf %>%
+  distinct(word, idf) %>%
+  arrange(idf) %>%
+  filter(idf > quantile(idf, 0.0005))
+
+dat_tfidf %<>%
+  filter(word %in% dat_domain_stopwords$word)
+
+# Only keeps words in English
+dat_english <-  dat_tfidf %>%
+  filter(word %in% GradyAugmented)
+
+# Remove self-identified stop words
+self_generated_stopwords <- c("et", "al", "trump", "si", "amp", "el", "la", "patient", "mi", "des", "les", "lo", "para", "di", "del", "hoy", "de", "los", "ー", "por", "en", "ini", "gt")
+
+dat_english %<>%
+  filter(!word %in% self_generated_stopwords)
+
+# Count word frequency
+dat_english %<>%
+  group_by(word) %>%
+  mutate(freq_all_tweets = n())
+
+dat_english_distinct <- dat_english %>%
+  distinct(word, .keep_all = TRUE) %>%
+  arrange(desc(freq_all_tweets))
+
+#Recalculate TF-IDF with English words only
+dat_english_distinct_tfidf <- dat_english %>%
+  select(-tf, -idf, -tf_idf) %>%
+  bind_tf_idf(word, V1, n) %>%
+  distinct(word, .keep_all = TRUE) %>%
+  arrange(tf_idf)
+  
+dat_english_tfidf <- dat_english %>%
+  bind_tf_idf(word, V1, n) %>%
+  arrange(tf_idf)
+```
+
+## Bigram and Trigram Analysis
+```{r}
+#Bigrams
+dat_bigrams <- dat %>%
+  ungroup() %>%
+  unnest_tokens(bigram, processed_text, token = "ngrams", n = 2)
+
+bigrams_separated <- dat_bigrams %>%
+  separate(bigram, c("word1", "word2", sep = " "))
+
+bigrams_filtered <- bigrams_separated %>%
+  filter(!word1 %in% stop_words$word 
+         & word1 != "http" 
+         & word1 != "https" 
+         & word1 != "www" 
+         & word1 %in% domain_stopwords_telemedicine$word 
+         & !word1 %in% self_generated_stopwords
+         & !word1 %in% stopwords(language = "es") 
+         & word1 %in% GradyAugmented) %>%
+  filter(!word2 %in% stop_words$word 
+         & word2 %in% domain_stopwords_telemedicine$word 
+         & !word2 %in% self_generated_stopwords
+         & !word2 %in% stopwords(language = "es") 
+         & word2 %in% GradyAugmented)
+
+bigram_counts <- bigrams_filtered %>%
+  count(word1, word2, sort = TRUE)
+
+bigram_united<- bigrams_filtered %>%
+  unite(bigram, word1, word2, sep = " ")
+
+bigram_counts %>%
+  filter(row_number() <= 10) %>%
+  unite(bigram, word1, word2, sep = " ")
+
+#Trigrams
+dat_trigrams <- dat %>%
+  ungroup() %>%
+  unnest_tokens(trigram, processed_text, token = "ngrams", n = 3)
+
+trigrams_separated <- dat_trigrams %>%
+  separate(trigram, c("word1", "word2", "word3", sep = " "))
+
+trigrams_filtered <- trigrams_separated %>%
+  filter(!word1 %in% stop_words$word 
+         & word1 != "http" 
+         & word1 != "https" 
+         & word1 != "www" 
+         & word1 %in% domain_stopwords_telemedicine$word 
+         & !word1 %in% self_generated_stopwords
+         & !word1 %in% stopwords(language = "es") 
+         & word1 %in% GradyAugmented) %>%
+  filter(!word2 %in% stop_words$word 
+         & word2 %in% domain_stopwords_telemedicine$word 
+         & !word2 %in% self_generated_stopwords
+         & !word2 %in% stopwords(language = "es") 
+         & word2 %in% GradyAugmented) %>%
+  filter(!word3 %in% stop_words$word 
+         & word3 %in% domain_stopwords_telemedicine$word 
+         & !word3 %in% self_generated_stopwords
+         & !word3 %in% stopwords(language = "es") 
+         & word3 %in% GradyAugmented)
+
+trigram_counts <- trigrams_filtered %>%
+  count(word1, word2, word3, sort = TRUE)
+
+trigram_united<- trigrams_filtered %>%
+  unite(trigram, word1, word2, word3, sep = " ")
+
+trigram_counts %>%
+  filter(row_number() <= 10) %>%
+  unite(trigram, word1, word2, word3, sep = " ")
+```
+
+## Word Cloud
+```{r}
+set.seed(110295)
+#Need to run in Console to get everything to fit
+#wordcloud(words = dat_english_distinct$word, 
+#          freq = dat_english_distinct$freq_all_tweets,
+#          scale = c(0.5, 0.25),
+#          min.freq = 1,
+#          max.words=200, random.order=FALSE, 
+#          rot.per=0.15, 
+#          colors=brewer.pal(8, "Dark2"))
+
+dat_wordcloud <- dat_english_distinct %>%
+  select(word, freq_all_tweets)
+
+colnames(dat_wordcloud) <- c("word", "freq")
+dat_wordcloud$freq <- as.numeric(dat_wordcloud$freq)
+dat_wordcloud$word <- as.character(dat_wordcloud$word)
+
+wordcloud2(dat_wordcloud, size = 2, minRotation = -pi/2, maxRotation = -pi/2)
+```
+
+# Part 6: Author Analysis
+
+## Authors of Most Retweeted Tweets
+```{r}
+author_analysis <- dat %>% 
+  select(author_id, text, retweet_count) %>%
+  arrange(desc(retweet_count)) %>%
+  filter(row_number() <= 100) %>%
+  group_by(author_id) %>%
+  mutate(author_count = n()) %>%
+  arrange(desc(author_count)) %>%
+  distinct(author_id, .keep_all = TRUE) #74 authors of the top 100 retweeted tweets
+
+View(author_analysis[c(6, 7, 16, 30, 32, 39, 42, 45, 47, 55:56, 60, 63, 70)])
+
+setwd("/Volumes/LaCie/Cancer_COVID/Data/")
+write.csv(author_analysis, "210430_authoranalysis.csv")
+```
+
+## Authors of Least Retweeted Tweets
+```{r}
+author_analysis_lowest <- dat %>% 
+  select(author_id, text, retweet_count) %>%
+  arrange(retweet_count) %>%
+  filter(retweet_count == 0) %>%
+  group_by(author_id) %>%
+  mutate(author_count = n()) %>%
+  arrange(desc(author_count)) %>%
+  distinct(author_id, .keep_all = TRUE) %>%
+  ungroup() %>%
+  slice_head(n = 100)
+
+## Randomly sample for matching
+setwd("/Volumes/LaCie/Cancer_COVID/Data/")
+#write.csv(author_analysis, "210430_authoranalysis.csv")
+write.csv(author_analysis_lowest, "210501_authoranalysis_lowest_random.csv")
+
+missing <- c(1, 6, 10, 15:16, 21, 23, 28:30, 35, 41, 50:51, 56, 63, 65:66, 70, 76, 79, 91:95, 98, 100)
+
+for (i in missing) {
+  print(i)
+  print(as.character(author_analysis_lowest[i, "text"]))
+}
+```
+
